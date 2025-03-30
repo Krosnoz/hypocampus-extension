@@ -1,0 +1,35 @@
+{
+	"manifest_version": 3,
+	"name": "Hypocampus PDF Downloader",
+	"version": "1.0",
+	"description": "Download PDF fiches from Hypocampus website",
+	"permissions": ["storage", "downloads", "cookies"],
+	"host_permissions": [
+		"https://lmg-prod.cortexio.se/*",
+		"https://hypocampus.fr/*",
+		"https://www.hypocampus.fr/*"
+	],
+	"action": {
+		"default_popup": "popup.html",
+		"default_icon": {
+			"16": "images/icon16.png",
+			"48": "images/icon48.png",
+			"128": "images/icon128.png"
+		}
+	},
+	"background": {
+		"service_worker": "background.js"
+	},
+	"content_scripts": [
+		{
+			"matches": ["https://hypocampus.fr/*", "https://www.hypocampus.fr/*"],
+			"js": ["content.js"],
+			"css": ["styles.css"]
+		}
+	],
+	"icons": {
+		"16": "images/icon16.png",
+		"48": "images/icon48.png",
+		"128": "images/icon128.png"
+	}
+}

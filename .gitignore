@@ -1,0 +1,6 @@
+/node_modules
+/out
+generate-icons.js
+package-extension.js
+package.json
+package-lock.json
