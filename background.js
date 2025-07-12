@@ -1,4 +1,6 @@
 // Base URL for the Hypocampus API
+// Load JSZip (added as local dependency in jszip.min.js)
+importScripts("jszip.min.js");
 const API_BASE_URL = "https://lmg-prod.cortexio.se/v1/file/";
 
 // Download queue state
@@ -9,6 +11,10 @@ let downloadStartTime = 0;
 let totalItems = 0;
 let pauseStartTime = 0;
 let totalPausedTime = 0;
+
+// Zip related state
+let zip = null; // Will hold the JSZip instance when downloading all
+let zipMode = false; // Flag to know if we are currently building a zip
 
 // Function to get the authentication token from cookies
 async function getAuthToken() {
@@ -126,6 +132,8 @@ function resetDownloadState() {
 	totalItems = 0;
 	pauseStartTime = 0;
 	totalPausedTime = 0;
+	zip = null;
+	zipMode = false;
 }
 
 // Listen for messages from the content script
@@ -152,8 +160,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		totalItems = message.totalItems || downloadQueue.length;
 		totalPausedTime = 0;
 
-		// Start the download process
-		processDownloadQueue(sender.tab.id);
+		// Prepare zip mode
+		zipMode = true;
+		zip = new JSZip();
+
+		// Start the zip build process
+		processZipQueue(sender.tab.id);
 		return true; // Keep the message channel open for the async response
 	}
 
@@ -182,8 +194,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 			action: "resumeDownloadUI",
 		});
 
-		// Continue processing the queue
-		processDownloadQueue(sender.tab.id);
+		// Continue processing the queue with the appropriate processor
+		if (zipMode) {
+			processZipQueue(sender.tab.id);
+		} else {
+			processDownloadQueue(sender.tab.id);
+		}
 		return true;
 	}
 
@@ -206,6 +222,134 @@ function calculateRemainingTime() {
 	const remainingItems = totalItems - currentIndex;
 
 	return Math.max(0, Math.round(remainingItems * 500));
+}
+
+// Helper to fetch a PDF and return it as a Blob (without triggering a download)
+async function fetchPDFBlob(pk) {
+	try {
+		const token = await getAuthToken();
+
+		if (!token) {
+			return null;
+		}
+
+		const url = `${API_BASE_URL}${pk}`;
+		const response = await fetch(url, {
+			headers: {
+				Authorization: `Bearer ${token}`,
+			},
+		});
+
+		if (!response.ok) {
+			throw new Error(`HTTP error: ${response.status}`);
+		}
+
+		const data = await response.json();
+		const pdfBase64 = data.file;
+
+		if (!pdfBase64) {
+			throw new Error("No PDF data found in response");
+		}
+
+		const byteCharacters = atob(pdfBase64);
+		const byteNumbers = new Array(byteCharacters.length);
+		for (let i = 0; i < byteCharacters.length; i++) {
+			byteNumbers[i] = byteCharacters.charCodeAt(i);
+		}
+		const byteArray = new Uint8Array(byteNumbers);
+		return new Blob([byteArray], { type: "application/pdf" });
+	} catch (err) {
+		console.error("Error fetching PDF blob:", err);
+		return null;
+	}
+}
+
+// Process queue when building a zip (pause / resume compatible)
+async function processZipQueue(tabId) {
+	if (!zipMode) return; // Should not happen
+
+	if (downloadPaused || currentIndex >= downloadQueue.length) {
+		// Finished adding PDFs, generate ZIP
+		if (currentIndex >= downloadQueue.length) {
+			// Inform UI that we are now generating the ZIP (optional)
+			chrome.tabs.sendMessage(tabId, {
+				action: "downloadProgress",
+				current: totalItems,
+				total: totalItems,
+				remainingTimeMs: 0,
+			});
+
+			try {
+				const zipBlob = await zip.generateAsync({ type: "blob" });
+				const url = URL.createObjectURL(zipBlob);
+
+				chrome.downloads.download(
+					{
+						url,
+						filename: `Hypocampus_PDFs.zip`,
+						saveAs: true,
+					},
+					() => {
+						// Revoke the object URL after Chrome has taken it
+						URL.revokeObjectURL(url);
+						// Notify completion
+						chrome.tabs.sendMessage(tabId, {
+							action: "downloadComplete",
+							type: "allZip",
+							count: totalItems,
+						});
+
+						// Clean state
+						resetDownloadState();
+					},
+				);
+			} catch (err) {
+				console.error("Error generating ZIP:", err);
+				chrome.tabs.sendMessage(tabId, {
+					action: "error",
+					message: "Erreur lors de la création de l'archive ZIP.",
+				});
+				resetDownloadState();
+			}
+		}
+		return;
+	}
+
+	// Send progress update
+	const remainingTimeMs = calculateRemainingTime();
+	chrome.tabs.sendMessage(tabId, {
+		action: "downloadProgress",
+		current: currentIndex,
+		total: totalItems,
+		remainingTimeMs: remainingTimeMs,
+	});
+
+	const item = downloadQueue[currentIndex];
+	const blob = await fetchPDFBlob(item.pk);
+
+	if (blob) {
+		const sanitizedName = item.name.replace(/[,/\\:*?"<>|]/g, "-");
+		zip.file(`${sanitizedName}.pdf`, blob);
+	}
+
+	currentIndex++;
+
+	// Send progress after adding the file
+	chrome.tabs.sendMessage(tabId, {
+		action: "downloadProgress",
+		current: currentIndex,
+		total: totalItems,
+		remainingTimeMs: calculateRemainingTime(),
+	});
+
+	// Small delay to avoid overwhelming server and allow UI update
+	if (currentIndex < downloadQueue.length && !downloadPaused) {
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		processZipQueue(tabId);
+	} else if (currentIndex >= downloadQueue.length) {
+		// Triggered at top of function on next call
+		processZipQueue(tabId);
+	}
 }
 
 // Process the download queue
