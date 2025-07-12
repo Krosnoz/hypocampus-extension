@@ -23,7 +23,7 @@
 	"content_scripts": [
 		{
 			"matches": ["https://hypocampus.fr/*", "https://www.hypocampus.fr/*"],
-			"js": ["content.js"],
+			"js": ["jszip.min.js", "content.js"],
 			"css": ["styles.css"]
 		}
 	],
